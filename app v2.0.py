@@ -136,7 +136,8 @@ def show_main_app():
             placeholder="Exemplos:\n7334\nK-7334-6392\nK-5678_08"
         )
         if st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True):
-            cleaned_inputs = list(set(sku.strip().upper() for sku in re.split(r'[,\s\n]+', input_skus_str) if sku.strip()))
+            raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', input_skus_str) if sku.strip()]
+            cleaned_inputs = list(dict.fromkeys(raw_inputs))
             if not cleaned_inputs:
                 st.warning("Por favor, insira ao menos um SKU para iniciar a verificação.")
             else:
