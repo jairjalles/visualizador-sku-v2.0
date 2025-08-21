@@ -55,22 +55,16 @@ def send_email_notification(report_data: dict):
 def find_images(normalized_sku: str, specific_number: int = None) -> list[str]:
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
     urls_to_check = []
+    # ADICIONE UMA LISTA DE EXTENSÕES PARA VERIFICAR
+    extensions = [".jpg", ".jpeg", ".png", ".webp"]
+
     if specific_number:
-        urls_to_check.append(f"{base_url}_{specific_number:02d}.jpg")
+        for ext in extensions:
+            urls_to_check.append(f"{base_url}_{specific_number:02d}{ext}")
     else:
-        urls_to_check = [f"{base_url}_{i:02d}.jpg" for i in range(1, MAX_IMAGES_TO_CHECK + 1)]
-    found_images = []
-    def check_url(url):
-        try:
-            response = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                return f"{url}?v={int(time.time())}"
-        except requests.exceptions.RequestException: pass
-        return None
-    with ThreadPoolExecutor(max_workers=len(urls_to_check) or 1) as executor:
-        results = executor.map(check_url, urls_to_check)
-        found_images = [url for url in results if url]
-    return sorted(found_images)
+        for i in range(1, MAX_IMAGES_TO_CHECK + 1):
+            for ext in extensions:
+                urls_to_check.append(f"{base_url}_{i:02d}{ext}")
 
 # --- FUNÇÕES DE INTERFACE (UI) ---
 
