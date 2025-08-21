@@ -20,6 +20,7 @@ IMAGE_BASE_URL = "https://topshop-tiny.com.br/wp-content/uploads/tiny"
 MAX_IMAGES_TO_CHECK = 5
 REQUEST_TIMEOUT = 3
 GRID_COLUMNS = 5
+MAX_CONCURRENT_REQUESTS = 8
 
 # --- INICIALIZAÇÃO DA SESSÃO ---
 if 'user_name' not in st.session_state:
@@ -56,30 +57,39 @@ def find_images(normalized_sku: str, specific_number: int = None) -> list[str]:
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
     urls_to_check = []
 
-    # Lógica simplificada para gerar apenas URLs .jpg
     if specific_number:
         urls_to_check.append(f"{base_url}_{specific_number:02d}.jpg")
     else:
         for i in range(1, MAX_IMAGES_TO_CHECK + 1):
             urls_to_check.append(f"{base_url}_{i:02d}.jpg")
 
-    # Função para verificar uma única URL
+    # Função para verificar uma única URL, AGORA COM TENTATIVAS (RETRIES)
     def check_url(url):
-        try:
-            response = requests.head(url, stream=True, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                # Adiciona um parâmetro para evitar cache do navegador/proxy
-                return f"{url}?v={int(time.time())}"
-        except requests.exceptions.RequestException:
-            pass
+        retries = 3  # Tentar até 3 vezes
+        delay = 0.5  # Começar com 0.5 segundos de espera
+        for i in range(retries):
+            try:
+                response = requests.head(url, stream=True, timeout=REQUEST_TIMEOUT)
+                if response.status_code == 200:
+                    return f"{url}?v={int(time.time())}"
+                # Se o servidor nos mandar parar (429), esperamos mais antes de tentar de novo
+                elif response.status_code == 429:
+                    time.sleep(delay * 2) 
+                # Para outros erros, apenas esperamos o delay normal
+                else:
+                    time.sleep(delay)
+            except requests.exceptions.RequestException:
+                # Se houver um erro de conexão, esperamos antes de tentar novamente
+                time.sleep(delay)
+            
+            delay *= 2 # Dobra o tempo de espera para a próxima tentativa (backoff exponencial)
         return None
 
-    # Se não houver URLs para checar, retorna uma lista vazia
     if not urls_to_check:
         return []
 
-    # Utiliza o executor para fazer todas as buscas em paralelo (máxima velocidade)
-    with ThreadPoolExecutor(max_workers=len(urls_to_check)) as executor:
+    # A mudança crucial: limitamos o número de "trabalhadores" (max_workers)
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
         results = executor.map(check_url, urls_to_check)
         found_images = [url for url in results if url]
 
