@@ -54,38 +54,35 @@ def send_email_notification(report_data: dict):
 @st.cache_data(ttl="1h", show_spinner=False)
 def find_images(normalized_sku: str, specific_number: int = None) -> list[str]:
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
-    extensions = [".jpg", ".jpeg", ".png"]
-    found_images = []
+    urls_to_check = []
+
+    # Lógica simplificada para gerar apenas URLs .jpg
+    if specific_number:
+        urls_to_check.append(f"{base_url}_{specific_number:02d}.jpg")
+    else:
+        for i in range(1, MAX_IMAGES_TO_CHECK + 1):
+            urls_to_check.append(f"{base_url}_{i:02d}.jpg")
 
     # Função para verificar uma única URL
     def check_url(url):
         try:
             response = requests.head(url, stream=True, timeout=REQUEST_TIMEOUT)
             if response.status_code == 200:
+                # Adiciona um parâmetro para evitar cache do navegador/proxy
                 return f"{url}?v={int(time.time())}"
         except requests.exceptions.RequestException:
             pass
         return None
 
-    # Lógica Otimizada
-    if specific_number:
-        # Se um número específico for pedido, verifica todas as extensões para ele
-        for ext in extensions:
-            url = f"{base_url}_{specific_number:02d}{ext}"
-            result = check_url(url)
-            if result:
-                found_images.append(result)
-                break # Encontrou, pode parar de procurar extensões para este número
-    else:
-        # Se for uma busca geral, itera pelos números
-        for i in range(1, MAX_IMAGES_TO_CHECK + 1):
-            for ext in extensions:
-                url = f"{base_url}_{i:02d}{ext}"
-                result = check_url(url)
-                if result:
-                    found_images.append(result)
-                    break # Encontrou para o número 'i', PULA para 'i+1'
-    
+    # Se não houver URLs para checar, retorna uma lista vazia
+    if not urls_to_check:
+        return []
+
+    # Utiliza o executor para fazer todas as buscas em paralelo (máxima velocidade)
+    with ThreadPoolExecutor(max_workers=len(urls_to_check)) as executor:
+        results = executor.map(check_url, urls_to_check)
+        found_images = [url for url in results if url]
+
     return sorted(found_images)
 
 # --- FUNÇÕES DE INTERFACE (UI) ---
