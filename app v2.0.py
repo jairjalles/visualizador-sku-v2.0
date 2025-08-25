@@ -53,41 +53,72 @@ def send_email_notification(report_data: dict):
         print(f"Erro ao enviar e-mail: {e}")
 
 @st.cache_data(ttl="1h", show_spinner=False)
-def find_images(normalized_sku: str, specific_number: int = None) -> list[str]:
+def find_images(normalized_sku: str, specific_number: int | None = None) -> list[str]:
+    """
+    Busca imagens do SKU com heurísticas para reduzir chamadas desnecessárias.
+    - Para SKUs que terminam em -6392: sonda _01; se não existir, testa _06 e retorna só ela.
+    - Para demais SKUs: verifica 01..MAX_IMAGES_TO_CHECK (e inclui _06 se for 6392).
+    """
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
-    urls_to_check = []
+    is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
 
-    if specific_number:
-        urls_to_check.append(f"{base_url}_{specific_number:02d}.jpg")
-    else:
-        # 1. Adiciona a busca padrão de 1 a 5
-        for i in range(1, MAX_IMAGES_TO_CHECK + 1):
-            urls_to_check.append(f"{base_url}_{i:02d}.jpg")
-        
-        # 2. LÓGICA ADICIONAL: Verifica se é um SKU de kit e adiciona a imagem 6
-        if normalized_sku.endswith("-6392"):
-            urls_to_check.append(f"{base_url}_06.jpg")
+    # Sessão HTTP reutilizável (mais rápido que abrir conexão a cada HEAD)
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=MAX_CONCURRENT_REQUESTS,
+        pool_maxsize=MAX_CONCURRENT_REQUESTS
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
 
-    # Função para verificar uma única URL (sem alterações aqui)
-    def check_url(url):
-        retries = 3
-        delay = 0.5
-        for i in range(retries):
+    def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
+        """HEAD com backoff leve; retorna URL (com cache buster) se existir."""
+        url = f"{base_url}_{num:02d}.jpg"
+        delay = 0.3
+        for _ in range(3):
             try:
-                response = requests.head(url, stream=True, timeout=REQUEST_TIMEOUT)
-                if response.status_code == 200:
+                resp = session.head(url, allow_redirects=True, timeout=timeout)
+                if resp.status_code == 200:
                     return f"{url}?v={int(time.time())}"
-                elif response.status_code == 429:
-                    time.sleep(delay * 2)
+                elif resp.status_code == 429:
+                    time.sleep(delay * 2)  # respeita rate limit
                 else:
                     time.sleep(delay)
-            except requests.exceptions.RequestException:
+            except requests.RequestException:
                 time.sleep(delay)
             delay *= 2
         return None
 
-    if not urls_to_check:
-        return []
+    # Caso específico: pedir uma imagem só
+    if specific_number is not None:
+        hit = head_ok(specific_number)
+        return [hit] if hit else []
+
+    # Heurística para kits "-6392"
+    if is_kit_6392:
+        # Sonda _01 com timeout curto; se não existir, tenta só _06 e faz early-exit
+        if head_ok(1, timeout=min(1.5, REQUEST_TIMEOUT)) is None:
+            hit_06 = head_ok(6)
+            if hit_06:
+                return [hit_06]  # evita 01..05 para ganhar tempo
+
+    # Estratégia padrão (e fallback)
+    numbers = list(range(1, MAX_IMAGES_TO_CHECK + 1))
+    # Garante _06 na varredura se for 6392 (caso _01 exista, você ainda pega _06 se houver)
+    if is_kit_6392 and 6 not in numbers:
+        numbers.append(6)
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as ex:
+        results = list(ex.map(head_ok, numbers))
+
+    found = [u for u in results if u]
+
+    # Ordena pelo sufixo numérico (_01, _02, ...)
+    def num_key(u: str) -> int:
+        m = re.search(r"_(\d{2})\.jpg", u)
+        return int(m.group(1)) if m else 0
+
+    return sorted(found, key=num_key)
 
     # O processamento paralelo continua o mesmo
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
