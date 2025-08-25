@@ -60,33 +60,41 @@ def find_images(normalized_sku: str, specific_number: int = None) -> list[str]:
     if specific_number:
         urls_to_check.append(f"{base_url}_{specific_number:02d}.jpg")
     else:
+        # 1. Adiciona a busca padrão de 1 a 5
         for i in range(1, MAX_IMAGES_TO_CHECK + 1):
             urls_to_check.append(f"{base_url}_{i:02d}.jpg")
+        
+        # 2. LÓGICA ADICIONAL: Verifica se é um SKU de kit e adiciona a imagem 6
+        if normalized_sku.endswith("-6392"):
+            urls_to_check.append(f"{base_url}_06.jpg")
 
-    # Função para verificar uma única URL, AGORA COM TENTATIVAS (RETRIES)
+    # Função para verificar uma única URL (sem alterações aqui)
     def check_url(url):
-        retries = 3  # Tentar até 3 vezes
-        delay = 0.5  # Começar com 0.5 segundos de espera
+        retries = 3
+        delay = 0.5
         for i in range(retries):
             try:
                 response = requests.head(url, stream=True, timeout=REQUEST_TIMEOUT)
                 if response.status_code == 200:
                     return f"{url}?v={int(time.time())}"
-                # Se o servidor nos mandar parar (429), esperamos mais antes de tentar de novo
                 elif response.status_code == 429:
-                    time.sleep(delay * 2) 
-                # Para outros erros, apenas esperamos o delay normal
+                    time.sleep(delay * 2)
                 else:
                     time.sleep(delay)
             except requests.exceptions.RequestException:
-                # Se houver um erro de conexão, esperamos antes de tentar novamente
                 time.sleep(delay)
-            
-            delay *= 2 # Dobra o tempo de espera para a próxima tentativa (backoff exponencial)
+            delay *= 2
         return None
 
     if not urls_to_check:
         return []
+
+    # O processamento paralelo continua o mesmo
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
+        results = executor.map(check_url, urls_to_check)
+        found_images = [url for url in results if url]
+
+    return sorted(found_images)
 
     # A mudança crucial: limitamos o número de "trabalhadores" (max_workers)
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
