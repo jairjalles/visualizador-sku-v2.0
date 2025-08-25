@@ -3,6 +3,7 @@ import requests
 import time
 import re
 from datetime import datetime
+import requests.adapters
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
@@ -119,20 +120,6 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
         return int(m.group(1)) if m else 0
 
     return sorted(found, key=num_key)
-
-    # O processamento paralelo continua o mesmo
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
-        results = executor.map(check_url, urls_to_check)
-        found_images = [url for url in results if url]
-
-    return sorted(found_images)
-
-    # A mudança crucial: limitamos o número de "trabalhadores" (max_workers)
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
-        results = executor.map(check_url, urls_to_check)
-        found_images = [url for url in results if url]
-
-    return sorted(found_images)
 
 # --- FUNÇÕES DE INTERFACE (UI) ---
 
