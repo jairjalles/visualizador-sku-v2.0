@@ -7,6 +7,7 @@ import requests.adapters
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
+from urllib.parse import quote, unquote # NOVA FUNCIONALIDADE: Para codificar a URL
 
 # --- CONFIGURAÇÃO DA PÁGINA (MAIS COMPLETA) ---
 st.set_page_config(
@@ -26,6 +27,8 @@ MAX_CONCURRENT_REQUESTS = 8
 # --- INICIALIZAÇÃO DA SESSÃO ---
 if 'user_name' not in st.session_state:
     st.session_state.user_name = None
+if 'processed_url' not in st.session_state:
+    st.session_state.processed_url = False
 
 # --- FUNÇÕES DE LÓGICA (SEM ALTERAÇÕES) ---
 def send_email_notification(report_data: dict):
@@ -55,15 +58,9 @@ def send_email_notification(report_data: dict):
 
 @st.cache_data(ttl="1h", show_spinner=False)
 def find_images(normalized_sku: str, specific_number: int | None = None) -> list[str]:
-    """
-    Busca imagens do SKU com heurísticas para reduzir chamadas desnecessárias.
-    - Para SKUs que terminam em -6392: sonda _01; se não existir, testa _06 e retorna só ela.
-    - Para demais SKUs: verifica 01..MAX_IMAGES_TO_CHECK (e inclui _06 se for 6392).
-    """
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
     is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
 
-    # Sessão HTTP reutilizável (mais rápido que abrir conexão a cada HEAD)
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(
         pool_connections=MAX_CONCURRENT_REQUESTS,
@@ -73,7 +70,6 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
     session.mount("https://", adapter)
 
     def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
-        """HEAD com backoff leve; retorna URL (com cache buster) se existir."""
         url = f"{base_url}_{num:02d}.jpg"
         delay = 0.3
         for _ in range(3):
@@ -82,7 +78,7 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
                 if resp.status_code == 200:
                     return f"{url}?v={int(time.time())}"
                 elif resp.status_code == 429:
-                    time.sleep(delay * 2)  # respeita rate limit
+                    time.sleep(delay * 2)
                 else:
                     time.sleep(delay)
             except requests.RequestException:
@@ -90,22 +86,17 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
             delay *= 2
         return None
 
-    # Caso específico: pedir uma imagem só
     if specific_number is not None:
         hit = head_ok(specific_number)
         return [hit] if hit else []
 
-    # Heurística para kits "-6392"
     if is_kit_6392:
-        # Sonda _01 com timeout curto; se não existir, tenta só _06 e faz early-exit
         if head_ok(1, timeout=min(1.5, REQUEST_TIMEOUT)) is None:
             hit_06 = head_ok(6)
             if hit_06:
-                return [hit_06]  # evita 01..05 para ganhar tempo
+                return [hit_06]
 
-    # Estratégia padrão (e fallback)
     numbers = list(range(1, MAX_IMAGES_TO_CHECK + 1))
-    # Garante _06 na varredura se for 6392 (caso _01 exista, você ainda pega _06 se houver)
     if is_kit_6392 and 6 not in numbers:
         numbers.append(6)
 
@@ -114,7 +105,6 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
 
     found = [u for u in results if u]
 
-    # Ordena pelo sufixo numérico (_01, _02, ...)
     def num_key(u: str) -> int:
         m = re.search(r"_(\d{2})\.jpg", u)
         return int(m.group(1)) if m else 0
@@ -159,20 +149,29 @@ def show_main_app():
         st.title(f"🖼️ Visualizador de Imagens")
         st.write(f"Bem-vindo(a), **{st.session_state.user_name}**!")
         st.divider()
-        
         st.header("Ações")
         if st.button("⚠️ Reportar um Problema", use_container_width=True, help="Clique aqui se encontrou uma imagem ou informação incorreta."):
             show_report_dialog()
-        
         st.divider()
         with st.expander("Sobre esta Ferramenta"):
             st.info("""
             Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs. 
             Utilize a busca para encontrar imagens por SKU.
-                    
             Desenvolvido por: Jair Jales
             """)
-        st.caption(f"Versão 2.0 | {datetime.now().year}")
+        st.caption(f"Versão 2.1 | {datetime.now().year}")
+        
+    # --- NOVA FUNCIONALIDADE: LER SKUS DA URL AO CARREGAR A PÁGINA ---
+    # Verifica se existem SKUs na URL e se ainda não foram processados nesta sessão.
+    if "skus" in st.query_params and not st.session_state.processed_url:
+        # Decodifica os SKUs da URL e os armazena no estado da sessão
+        skus_from_url = unquote(st.query_params["skus"])
+        # Substitui vírgulas por quebras de linha para preencher o text_area
+        st.session_state.initial_search_text = skus_from_url.replace(",", "\n")
+        st.session_state.processed_url = True # Marca como processado
+    
+    # Pega o texto inicial para o text_area, seja da URL ou vazio.
+    initial_text = st.session_state.get("initial_search_text", "")
 
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
@@ -181,23 +180,38 @@ def show_main_app():
     with st.container(border=True):
         input_skus_str = st.text_area(
             "Insira os SKUs ou nomes de imagem (um por linha)",
-            height=130, 
-            placeholder="Exemplos:\n7334\nK-7334-6392\nK-5678_08"
+            height=130,
+            placeholder="Exemplos:\n7334\nK-7334-6392\nK-5678_08",
+            value=initial_text # Define o valor inicial do campo de texto
         )
-        if st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True):
-            raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', input_skus_str) if sku.strip()]
-            cleaned_inputs = list(dict.fromkeys(raw_inputs))
-            if not cleaned_inputs:
-                st.warning("Por favor, insira ao menos um SKU para iniciar a verificação.")
-            else:
-                # O processamento dos resultados acontece aqui
-                process_and_display_results(cleaned_inputs)
+        
+        search_button_clicked = st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True)
+
+    # --- LÓGICA DE EXECUÇÃO DA BUSCA ---
+    # A busca é executada se o botão for clicado OU se houver texto inicial vindo da URL.
+    if search_button_clicked or initial_text:
+        # Se veio da URL, usa o texto inicial. Senão, usa o que está no campo de texto.
+        text_to_process = initial_text if initial_text and not search_button_clicked else input_skus_str
+        
+        raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', text_to_process) if sku.strip()]
+        cleaned_inputs = list(dict.fromkeys(raw_inputs))
+        
+        if not cleaned_inputs:
+            st.warning("Por favor, insira ao menos um SKU para iniciar a verificação.")
+        else:
+            process_and_display_results(cleaned_inputs)
+        
+        # NOVA FUNCIONALIDADE: Limpa o texto inicial após a primeira busca automática.
+        if "initial_search_text" in st.session_state:
+            del st.session_state["initial_search_text"]
+
 
 def process_and_display_results(cleaned_inputs):
     specific_pattern = re.compile(r'(.+?)[_-](\d{1,2})$')
     st.subheader("Resultados da Verificação")
 
     with st.spinner("Buscando imagens em nossos servidores..."):
+        all_found = True
         for user_input in cleaned_inputs:
             st.markdown(f"##### Exibindo para: `{user_input}`")
             images_found = []
@@ -218,8 +232,26 @@ def process_and_display_results(cleaned_inputs):
                             clean_url = img_url.split('?')[0]
                             st.text_input("Link:", value=clean_url, key=f"link_{clean_url}", label_visibility="collapsed", help="Link da imagem para copiar.")
             else:
+                all_found = False
                 st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
             st.write("") # Adiciona um espaço vertical
+
+    # --- NOVA FUNCIONALIDADE: GERAR LINK DE COMPARTILHAMENTO ---
+    if all_found and cleaned_inputs:
+        st.divider()
+        st.subheader("🔗 Compartilhar esta Pesquisa")
+        st.info("Copie o link abaixo para compartilhar exatamente esta visualização com outra pessoa.")
+        
+        # Junta os SKUs com vírgula para usar na URL
+        skus_for_url = ",".join(cleaned_inputs)
+        # Codifica os SKUs para garantir que a URL seja válida
+        encoded_skus = quote(skus_for_url)
+        # Cria o parâmetro final para a URL
+        share_param = f"?skus={encoded_skus}"
+        
+        st.code(share_param, language=None)
+        st.caption("Adicione o código acima ao final da URL principal do seu aplicativo para criar o link de compartilhamento.")
+
 
 # --- PONTO DE ENTRADA PRINCIPAL ---
 if st.session_state.user_name is None:
