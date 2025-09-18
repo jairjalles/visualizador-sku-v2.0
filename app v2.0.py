@@ -7,9 +7,10 @@ import requests.adapters
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
-from urllib.parse import quote, unquote # NOVA FUNCIONALIDADE: Para codificar a URL
+from urllib.parse import quote, unquote
+from streamlit_copy_button import copy_button # UX MELHORIA: Botão de copiar
 
-# --- CONFIGURAÇÃO DA PÁGINA (MAIS COMPLETA) ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Visualizador de Imagens",
     page_icon="🖼️",
@@ -23,14 +24,16 @@ MAX_IMAGES_TO_CHECK = 5
 REQUEST_TIMEOUT = 3
 GRID_COLUMNS = 5
 MAX_CONCURRENT_REQUESTS = 8
+MAX_HISTORY_ITEMS = 10
 
 # --- INICIALIZAÇÃO DA SESSÃO ---
 if 'user_name' not in st.session_state:
     st.session_state.user_name = None
-if 'processed_url' not in st.session_state:
-    st.session_state.processed_url = False
+if 'search_history' not in st.session_state:
+    st.session_state.search_history = []
 
-# --- FUNÇÕES DE LÓGICA (SEM ALTERAÇÕES) ---
+# --- FUNÇÕES DE LÓGICA ---
+# ... (a função send_email_notification continua a mesma, sem alterações) ...
 def send_email_notification(report_data: dict):
     try:
         config = st.secrets["email_config"]
@@ -56,8 +59,11 @@ def send_email_notification(report_data: dict):
         st.error("Falha ao enviar e-mail de notificação.")
         print(f"Erro ao enviar e-mail: {e}")
 
+# CORREÇÃO DE CACHE: Adicionado 'force_refresh_token' para invalidar o cache sob demanda
 @st.cache_data(ttl="1h", show_spinner=False)
-def find_images(normalized_sku: str, specific_number: int | None = None) -> list[str]:
+def find_images(normalized_sku: str, specific_number: int | None = None, force_refresh_token=None) -> list[str]:
+    # O argumento 'force_refresh_token' não é usado, mas sua simples presença com um valor
+    # diferente (como o timestamp atual) força o Streamlit a re-executar a função.
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
     is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
 
@@ -112,7 +118,7 @@ def find_images(normalized_sku: str, specific_number: int | None = None) -> list
     return sorted(found, key=num_key)
 
 # --- FUNÇÕES DE INTERFACE (UI) ---
-
+# ... (show_login_screen e show_report_dialog continuam os mesmos) ...
 def show_login_screen():
     st.title("🖼️ Visualizador de Imagens")
     st.subheader("Por favor, identifique-se para acessar a ferramenta.")
@@ -149,109 +155,101 @@ def show_main_app():
         st.title(f"🖼️ Visualizador de Imagens")
         st.write(f"Bem-vindo(a), **{st.session_state.user_name}**!")
         st.divider()
+        
         st.header("Ações")
         if st.button("⚠️ Reportar um Problema", use_container_width=True, help="Clique aqui se encontrou uma imagem ou informação incorreta."):
             show_report_dialog()
+        
+        # UX MELHORIA 1: HISTÓRICO DE PESQUISAS
+        st.divider()
+        st.header("Histórico de Pesquisas")
+        if not st.session_state.search_history:
+            st.caption("Seu histórico aparecerá aqui.")
+        else:
+            # Mostra o histórico, com o mais recente no topo
+            for i, search_term in enumerate(reversed(st.session_state.search_history)):
+                if st.button(search_term, key=f"history_{i}", use_container_width=True):
+                    # Ao clicar, atualiza o campo de busca e executa novamente
+                    st.session_state.current_search = search_term
+                    st.rerun()
+
         st.divider()
         with st.expander("Sobre esta Ferramenta"):
             st.info("""
-            Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs. 
-            Utilize a busca para encontrar imagens por SKU.
+            Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs.
             Desenvolvido por: Jair Jales
             """)
-        st.caption(f"Versão 2.1 | {datetime.now().year}")
-        
-    # --- NOVA FUNCIONALIDADE: LER SKUS DA URL AO CARREGAR A PÁGINA ---
-    # Verifica se existem SKUs na URL e se ainda não foram processados nesta sessão.
-    if "skus" in st.query_params and not st.session_state.processed_url:
-        # Decodifica os SKUs da URL e os armazena no estado da sessão
-        skus_from_url = unquote(st.query_params["skus"])
-        # Substitui vírgulas por quebras de linha para preencher o text_area
-        st.session_state.initial_search_text = skus_from_url.replace(",", "\n")
-        st.session_state.processed_url = True # Marca como processado
-    
-    # Pega o texto inicial para o text_area, seja da URL ou vazio.
-    initial_text = st.session_state.get("initial_search_text", "")
+        st.caption(f"Versão 3.0 | {datetime.now().year}")
 
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
     st.markdown("Utilize o campo abaixo para buscar por um ou mais SKUs. A busca pode ser padrão ou por uma imagem específica (ex: `SKU_08`).")
+
+    # Pega o valor do histórico, se houver, para preencher o campo
+    initial_search_value = st.session_state.pop("current_search", "")
 
     with st.container(border=True):
         input_skus_str = st.text_area(
             "Insira os SKUs ou nomes de imagem (um por linha)",
             height=130,
             placeholder="Exemplos:\n7334\nK-7334-6392\nK-5678_08",
-            value=initial_text # Define o valor inicial do campo de texto
+            value=initial_search_value
         )
         
-        search_button_clicked = st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True)
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_button_clicked = st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True)
+        with col2:
+            # CORREÇÃO DE CACHE: Checkbox para forçar a atualização
+            force_refresh = st.checkbox("Forçar atualização", help="Marque esta opção se acabou de subir uma imagem e ela não está aparecendo. Ignora o cache de 1h.")
 
-    # --- LÓGICA DE EXECUÇÃO DA BUSCA ---
-    # A busca é executada se o botão for clicado OU se houver texto inicial vindo da URL.
-    if search_button_clicked or initial_text:
-        # Se veio da URL, usa o texto inicial. Senão, usa o que está no campo de texto.
-        text_to_process = initial_text if initial_text and not search_button_clicked else input_skus_str
-        
-        raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', text_to_process) if sku.strip()]
+    if search_button_clicked:
+        raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', input_skus_str) if sku.strip()]
         cleaned_inputs = list(dict.fromkeys(raw_inputs))
         
         if not cleaned_inputs:
             st.warning("Por favor, insira ao menos um SKU para iniciar a verificação.")
         else:
-            process_and_display_results(cleaned_inputs)
-        
-        # NOVA FUNCIONALIDADE: Limpa o texto inicial após a primeira busca automática.
-        if "initial_search_text" in st.session_state:
-            del st.session_state["initial_search_text"]
+            # UX MELHORIA 1: Adiciona ao histórico
+            search_term_for_history = ", ".join(cleaned_inputs)
+            if search_term_for_history not in st.session_state.search_history:
+                st.session_state.search_history.append(search_term_for_history)
+                # Mantém o histórico com no máximo 10 itens
+                if len(st.session_state.search_history) > MAX_HISTORY_ITEMS:
+                    st.session_state.search_history.pop(0)
+
+            process_and_display_results(cleaned_inputs, force_refresh)
 
 
-def process_and_display_results(cleaned_inputs):
-    specific_pattern = re.compile(r'(.+?)[_-](\d{1,2})$')
+def process_and_display_results(cleaned_inputs, force_refresh=False):
     st.subheader("Resultados da Verificação")
+    
+    # CORREÇÃO DE CACHE: Gera um token único se a atualização for forçada
+    cache_buster = int(time.time()) if force_refresh else None
 
     with st.spinner("Buscando imagens em nossos servidores..."):
-        all_found = True
         for user_input in cleaned_inputs:
-            st.markdown(f"##### Exibindo para: `{user_input}`")
-            images_found = []
-            match = specific_pattern.match(user_input)
-            
-            if match:
-                base_sku, img_number = match.groups()
-                images_found = find_images(base_sku, specific_number=int(img_number))
-            else:
-                images_found = find_images(user_input)
-            
-            if images_found:
-                with st.container(border=True):
+            # UX MELHORIA 2: RESULTADOS AGRUPADOS (ACORDEÃO)
+            with st.expander(f"**Resultados para: `{user_input}`**", expanded=True):
+                images_found = []
+                match = re.compile(r'(.+?)[_-](\d{1,2})$').match(user_input)
+                
+                if match:
+                    base_sku, img_number = match.groups()
+                    images_found = find_images(base_sku, specific_number=int(img_number), force_refresh_token=cache_buster)
+                else:
+                    images_found = find_images(user_input, force_refresh_token=cache_buster)
+                
+                if images_found:
                     cols = st.columns(GRID_COLUMNS)
                     for i, img_url in enumerate(images_found):
                         with cols[i % GRID_COLUMNS]:
                             st.image(img_url, use_container_width=True)
                             clean_url = img_url.split('?')[0]
-                            st.text_input("Link:", value=clean_url, key=f"link_{clean_url}", label_visibility="collapsed", help="Link da imagem para copiar.")
-            else:
-                all_found = False
-                st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
-            st.write("") # Adiciona um espaço vertical
-
-    # --- NOVA FUNCIONALIDADE: GERAR LINK DE COMPARTILHAMENTO ---
-    if all_found and cleaned_inputs:
-        st.divider()
-        st.subheader("🔗 Compartilhar esta Pesquisa")
-        st.info("Copie o link abaixo para compartilhar exatamente esta visualização com outra pessoa.")
-        
-        # Junta os SKUs com vírgula para usar na URL
-        skus_for_url = ",".join(cleaned_inputs)
-        # Codifica os SKUs para garantir que a URL seja válida
-        encoded_skus = quote(skus_for_url)
-        # Cria o parâmetro final para a URL
-        share_param = f"?skus={encoded_skus}"
-        
-        st.code(share_param, language=None)
-        st.caption("Adicione o código acima ao final da URL principal do seu aplicativo para criar o link de compartilhamento.")
-
+                            # UX MELHORIA 3: BOTÃO DE COPIAR
+                            copy_button(clean_url, label="Copiar Link da Imagem")
+                else:
+                    st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
 
 # --- PONTO DE ENTRADA PRINCIPAL ---
 if st.session_state.user_name is None:
