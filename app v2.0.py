@@ -7,8 +7,6 @@ import requests.adapters
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
-from urllib.parse import quote, unquote
-from streamlit_copy_button import copy_button # UX MELHORIA: Botão de copiar
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -33,7 +31,6 @@ if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 
 # --- FUNÇÕES DE LÓGICA ---
-# ... (a função send_email_notification continua a mesma, sem alterações) ...
 def send_email_notification(report_data: dict):
     try:
         config = st.secrets["email_config"]
@@ -59,11 +56,8 @@ def send_email_notification(report_data: dict):
         st.error("Falha ao enviar e-mail de notificação.")
         print(f"Erro ao enviar e-mail: {e}")
 
-# CORREÇÃO DE CACHE: Adicionado 'force_refresh_token' para invalidar o cache sob demanda
 @st.cache_data(ttl="1h", show_spinner=False)
 def find_images(normalized_sku: str, specific_number: int | None = None, force_refresh_token=None) -> list[str]:
-    # O argumento 'force_refresh_token' não é usado, mas sua simples presença com um valor
-    # diferente (como o timestamp atual) força o Streamlit a re-executar a função.
     base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
     is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
 
@@ -118,7 +112,30 @@ def find_images(normalized_sku: str, specific_number: int | None = None, force_r
     return sorted(found, key=num_key)
 
 # --- FUNÇÕES DE INTERFACE (UI) ---
-# ... (show_login_screen e show_report_dialog continuam os mesmos) ...
+
+# NOVA FUNÇÃO NATIVA PARA COPIAR - SUBSTITUI A BIBLIOTECA EXTERNA
+def copy_to_clipboard_button(text_to_copy, button_text="Copiar Link", key=None):
+    """
+    Cria um botão que copia o texto fornecido para a área de transferência do usuário.
+    Usa componentes HTML/JavaScript nativos do Streamlit.
+    """
+    button_id = f"copy-button-{key or text_to_copy}"
+    
+    html_code = f"""
+    <button id="{button_id}" onclick="copyToClipboard(this, '{text_to_copy}')">{button_text}</button>
+    <script>
+    function copyToClipboard(element, text) {{
+        navigator.clipboard.writeText(text).then(function() {{
+            element.innerText = 'Copiado!';
+            setTimeout(function() {{ element.innerText = '{button_text}'; }}, 1000);
+        }}, function(err) {{
+            console.error('Erro ao copiar: ', err);
+        }});
+    }}
+    </script>
+    """
+    st.components.v1.html(html_code, height=40)
+
 def show_login_screen():
     st.title("🖼️ Visualizador de Imagens")
     st.subheader("Por favor, identifique-se para acessar a ferramenta.")
@@ -160,16 +177,13 @@ def show_main_app():
         if st.button("⚠️ Reportar um Problema", use_container_width=True, help="Clique aqui se encontrou uma imagem ou informação incorreta."):
             show_report_dialog()
         
-        # UX MELHORIA 1: HISTÓRICO DE PESQUISAS
         st.divider()
         st.header("Histórico de Pesquisas")
         if not st.session_state.search_history:
             st.caption("Seu histórico aparecerá aqui.")
         else:
-            # Mostra o histórico, com o mais recente no topo
             for i, search_term in enumerate(reversed(st.session_state.search_history)):
                 if st.button(search_term, key=f"history_{i}", use_container_width=True):
-                    # Ao clicar, atualiza o campo de busca e executa novamente
                     st.session_state.current_search = search_term
                     st.rerun()
 
@@ -179,13 +193,12 @@ def show_main_app():
             Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs.
             Desenvolvido por: Jair Jales
             """)
-        st.caption(f"Versão 3.0 | {datetime.now().year}")
+        st.caption(f"Versão 3.1 | {datetime.now().year}")
 
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
     st.markdown("Utilize o campo abaixo para buscar por um ou mais SKUs. A busca pode ser padrão ou por uma imagem específica (ex: `SKU_08`).")
 
-    # Pega o valor do histórico, se houver, para preencher o campo
     initial_search_value = st.session_state.pop("current_search", "")
 
     with st.container(border=True):
@@ -200,7 +213,6 @@ def show_main_app():
         with col1:
             search_button_clicked = st.button("🔍 Iniciar Verificação", type="primary", use_container_width=True)
         with col2:
-            # CORREÇÃO DE CACHE: Checkbox para forçar a atualização
             force_refresh = st.checkbox("Forçar atualização", help="Marque esta opção se acabou de subir uma imagem e ela não está aparecendo. Ignora o cache de 1h.")
 
     if search_button_clicked:
@@ -210,11 +222,9 @@ def show_main_app():
         if not cleaned_inputs:
             st.warning("Por favor, insira ao menos um SKU para iniciar a verificação.")
         else:
-            # UX MELHORIA 1: Adiciona ao histórico
             search_term_for_history = ", ".join(cleaned_inputs)
             if search_term_for_history not in st.session_state.search_history:
                 st.session_state.search_history.append(search_term_for_history)
-                # Mantém o histórico com no máximo 10 itens
                 if len(st.session_state.search_history) > MAX_HISTORY_ITEMS:
                     st.session_state.search_history.pop(0)
 
@@ -224,12 +234,10 @@ def show_main_app():
 def process_and_display_results(cleaned_inputs, force_refresh=False):
     st.subheader("Resultados da Verificação")
     
-    # CORREÇÃO DE CACHE: Gera um token único se a atualização for forçada
     cache_buster = int(time.time()) if force_refresh else None
 
     with st.spinner("Buscando imagens em nossos servidores..."):
         for user_input in cleaned_inputs:
-            # UX MELHORIA 2: RESULTADOS AGRUPADOS (ACORDEÃO)
             with st.expander(f"**Resultados para: `{user_input}`**", expanded=True):
                 images_found = []
                 match = re.compile(r'(.+?)[_-](\d{1,2})$').match(user_input)
@@ -246,8 +254,8 @@ def process_and_display_results(cleaned_inputs, force_refresh=False):
                         with cols[i % GRID_COLUMNS]:
                             st.image(img_url, use_container_width=True)
                             clean_url = img_url.split('?')[0]
-                            # UX MELHORIA 3: BOTÃO DE COPIAR
-                            copy_button(clean_url, label="Copiar Link da Imagem")
+                            # Chama a nova função nativa de copiar
+                            copy_to_clipboard_button(clean_url, button_text="Copiar Link", key=clean_url)
                 else:
                     st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
 
