@@ -17,7 +17,9 @@ st.set_page_config(
 )
 
 # --- CONSTANTES ---
-IMAGE_BASE_URL = "https://topshop-tiny.com.br/wp-content/uploads/tiny"
+OLD_IMAGE_BASE_URL = "https://topshop-tiny.com.br/wp-content/uploads/tiny"
+NEW_IMAGE_BASE_URL = "https://f005.backblazeb2.com/file/topshop-tiny"
+
 MAX_IMAGES_TO_CHECK = 5
 REQUEST_TIMEOUT = 3
 GRID_COLUMNS = 5
@@ -31,6 +33,96 @@ if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 
 # --- FUNÇÕES DE LÓGICA ---
+def _search_hosting_location(base_url: str, normalized_sku: str, is_old_hosting: bool, specific_number: int | None = None) -> list[str]:
+    """
+    Função auxiliar que realiza a busca em uma única URL base.
+    is_old_hosting: Flag para lidar com a estrutura de URL diferente da hospedagem antiga.
+    """
+    is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
+
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_CONCURRENT_REQUESTS, pool_maxsize=MAX_CONCURRENT_REQUESTS)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
+        """Verifica se uma URL de imagem existe."""
+        filename = f"{normalized_sku}_{num:02d}.jpg"
+        
+        # A estrutura do caminho é a mesma para ambas as hospedagens agora
+        url = f"{base_url}/{normalized_sku}/{filename}"
+             
+        delay = 0.3
+        for _ in range(3):
+            try:
+                resp = session.head(url, allow_redirects=True, timeout=timeout)
+                if resp.status_code == 200:
+                    return f"{url}?v={int(time.time())}" # Cache buster
+                elif resp.status_code == 429:
+                    time.sleep(delay * 2)
+                else:
+                    return None # Se não for 200 ou 429, provavelmente não existe.
+            except requests.RequestException:
+                time.sleep(delay)
+            delay *= 2
+        return None
+
+    if specific_number is not None:
+        hit = head_ok(specific_number)
+        return [hit] if hit else []
+
+    if is_kit_6392 and is_old_hosting: # Heurística específica da hospedagem antiga
+        if head_ok(1, timeout=min(1.5, REQUEST_TIMEOUT)) is None:
+            hit_06 = head_ok(6)
+            if hit_06:
+                return [hit_06]
+
+    numbers = list(range(1, MAX_IMAGES_TO_CHECK + 1))
+    if is_kit_6392 and 6 not in numbers:
+        numbers.append(6)
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as ex:
+        results = list(ex.map(head_ok, numbers))
+
+    found = [u for u in results if u]
+
+    def num_key(u: str) -> int:
+        m = re.search(r"_(\d{2})\.jpg", u)
+        return int(m.group(1)) if m else 0
+
+    return sorted(found, key=num_key)
+
+
+@st.cache_data(ttl="1h", show_spinner=False)
+def find_images(normalized_sku: str, specific_number: int | None = None, force_refresh_token=None) -> list[str]:
+    """
+    Coordena a busca de imagens, priorizando a nova hospedagem e usando a antiga como fallback.
+    """
+    # 1. Tenta buscar na NOVA hospedagem primeiro
+    new_hosting_results = _search_hosting_location(
+        base_url=NEW_IMAGE_BASE_URL,
+        normalized_sku=normalized_sku,
+        is_old_hosting=False,
+        specific_number=specific_number
+    )
+
+    if new_hosting_results:
+        st.info(f"✅ Imagens para `{normalized_sku}` encontradas na nova hospedagem (B2).", icon="🚀")
+        return new_hosting_results
+
+    # 2. Se não encontrar, busca na ANTIGA hospedagem como fallback
+    old_hosting_results = _search_hosting_location(
+        base_url=OLD_IMAGE_BASE_URL,
+        normalized_sku=normalized_sku,
+        is_old_hosting=True,
+        specific_number=specific_number
+    )
+    
+    if old_hosting_results:
+        st.warning(f"Imagens para `{normalized_sku}` encontradas apenas na hospedagem antiga.", icon="💾")
+
+    return old_hosting_results
+
 def send_email_notification(report_data: dict):
     try:
         config = st.secrets["email_config"]
@@ -56,73 +148,12 @@ def send_email_notification(report_data: dict):
         st.error("Falha ao enviar e-mail de notificação.")
         print(f"Erro ao enviar e-mail: {e}")
 
-@st.cache_data(ttl="1h", show_spinner=False)
-def find_images(normalized_sku: str, specific_number: int | None = None, force_refresh_token=None) -> list[str]:
-    base_url = f"{IMAGE_BASE_URL}/{normalized_sku}/{normalized_sku}"
-    is_kit_6392 = bool(re.search(r"(?:-|_)?6392$", normalized_sku))
-
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(
-        pool_connections=MAX_CONCURRENT_REQUESTS,
-        pool_maxsize=MAX_CONCURRENT_REQUESTS
-    )
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
-    def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
-        url = f"{base_url}_{num:02d}.jpg"
-        delay = 0.3
-        for _ in range(3):
-            try:
-                resp = session.head(url, allow_redirects=True, timeout=timeout)
-                if resp.status_code == 200:
-                    return f"{url}?v={int(time.time())}"
-                elif resp.status_code == 429:
-                    time.sleep(delay * 2)
-                else:
-                    time.sleep(delay)
-            except requests.RequestException:
-                time.sleep(delay)
-            delay *= 2
-        return None
-
-    if specific_number is not None:
-        hit = head_ok(specific_number)
-        return [hit] if hit else []
-
-    if is_kit_6392:
-        if head_ok(1, timeout=min(1.5, REQUEST_TIMEOUT)) is None:
-            hit_06 = head_ok(6)
-            if hit_06:
-                return [hit_06]
-
-    numbers = list(range(1, MAX_IMAGES_TO_CHECK + 1))
-    if is_kit_6392 and 6 not in numbers:
-        numbers.append(6)
-
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as ex:
-        results = list(ex.map(head_ok, numbers))
-
-    found = [u for u in results if u]
-
-    def num_key(u: str) -> int:
-        m = re.search(r"_(\d{2})\.jpg", u)
-        return int(m.group(1)) if m else 0
-
-    return sorted(found, key=num_key)
-
 # --- FUNÇÕES DE INTERFACE (UI) ---
-
-# NOVA FUNÇÃO NATIVA PARA COPIAR - SUBSTITUI A BIBLIOTECA EXTERNA
 def copy_to_clipboard_button(text_to_copy, button_text="Copiar Link", key=None):
-    """
-    Cria um botão que copia o texto fornecido para a área de transferência do usuário.
-    Usa componentes HTML/JavaScript nativos do Streamlit.
-    """
     button_id = f"copy-button-{key or text_to_copy}"
     
     html_code = f"""
-    <button id="{button_id}" onclick="copyToClipboard(this, '{text_to_copy}')">{button_text}</button>
+    <button id="{button_id}" onclick="copyToClipboard(this, '{text_to_copy}')" style="width:100%; border:1px solid #4A4A4A; background-color:#2A2A2A; color:white; padding:5px; border-radius:5px; cursor:pointer;">{button_text}</button>
     <script>
     function copyToClipboard(element, text) {{
         navigator.clipboard.writeText(text).then(function() {{
@@ -193,7 +224,7 @@ def show_main_app():
             Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs.
             Desenvolvido por: Jair Jales
             """)
-        st.caption(f"Versão 3.1 | {datetime.now().year}")
+        st.caption(f"Versão 4.0 | {datetime.now().year}")
 
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
@@ -230,7 +261,6 @@ def show_main_app():
 
             process_and_display_results(cleaned_inputs, force_refresh)
 
-
 def process_and_display_results(cleaned_inputs, force_refresh=False):
     st.subheader("Resultados da Verificação")
     
@@ -254,7 +284,6 @@ def process_and_display_results(cleaned_inputs, force_refresh=False):
                         with cols[i % GRID_COLUMNS]:
                             st.image(img_url, use_container_width=True)
                             clean_url = img_url.split('?')[0]
-                            # Chama a nova função nativa de copiar
                             copy_to_clipboard_button(clean_url, button_text="Copiar Link", key=clean_url)
                 else:
                     st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
