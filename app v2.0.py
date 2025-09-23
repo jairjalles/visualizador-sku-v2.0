@@ -176,11 +176,17 @@ def create_shareable_link_button(skus_list: list[str], button_text: str = "Compa
     skus_param = ",".join([quote(s) for s in skus_list])
     button_id = f"share-button-{key}"
     
+    # O JavaScript foi corrigido para usar `top.location.href`
+    # Isso garante que ele capture a URL principal da aplicação, e não a do iframe do componente.
     js_code = f"""
     <script>
     function createAndCopyShareLink(element) {{
         const skus = "{skus_param}";
-        const baseUrl = `${{window.location.protocol}}//${{window.location.host}}${{window.location.pathname}}`;
+        
+        // CORREÇÃO: Pega a URL da janela principal (top) e remove quaisquer parâmetros existentes.
+        const parentUrl = top.location.href;
+        const baseUrl = parentUrl.split('?')[0]; // Remove query params
+        
         const shareUrl = `${{baseUrl}}?skus=${{skus}}`;
         
         navigator.clipboard.writeText(shareUrl).then(function() {{
