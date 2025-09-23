@@ -7,6 +7,7 @@ import requests.adapters
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
+from urllib.parse import quote
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -51,7 +52,7 @@ def _search_hosting_location(base_url: str, normalized_sku: str, is_old_hosting:
         
         # A estrutura do caminho é a mesma para ambas as hospedagens agora
         url = f"{base_url}/{normalized_sku}/{filename}"
-             
+            
         delay = 0.3
         for _ in range(3):
             try:
@@ -167,6 +168,34 @@ def copy_to_clipboard_button(text_to_copy, button_text="Copiar Link", key=None):
     """
     st.components.v1.html(html_code, height=40)
 
+# NOVO: Função para criar e copiar o link de compartilhamento
+def create_shareable_link_button(skus_list: list[str], button_text: str = "Compartilhar Pesquisa 🔗", key: str = "share_link"):
+    """Cria um botão que copia a URL atual com os SKUs da pesquisa como query params."""
+    
+    # Converte a lista de SKUs em uma string segura para URL (ex: SKU1,SKU2)
+    skus_param = ",".join([quote(s) for s in skus_list])
+    button_id = f"share-button-{key}"
+    
+    js_code = f"""
+    <script>
+    function createAndCopyShareLink(element) {{
+        const skus = "{skus_param}";
+        const baseUrl = `${{window.location.protocol}}//${{window.location.host}}${{window.location.pathname}}`;
+        const shareUrl = `${{baseUrl}}?skus=${{skus}}`;
+        
+        navigator.clipboard.writeText(shareUrl).then(function() {{
+            element.innerText = 'Link Copiado!';
+            setTimeout(function() {{ element.innerText = '{button_text}'; }}, 1500);
+        }}, function(err) {{
+            console.error('Erro ao copiar o link de compartilhamento: ', err);
+            element.innerText = 'Erro ao Copiar';
+        }});
+    }}
+    </script>
+    <button id="{button_id}" onclick="createAndCopyShareLink(this)" style="width:100%; border:1px solid #4A4A4A; background-color:#2A2A2A; color:white; padding:8px; border-radius:5px; cursor:pointer;">{button_text}</button>
+    """
+    st.components.v1.html(js_code, height=50)
+
 def show_login_screen():
     st.title("🖼️ Visualizador de Imagens")
     st.subheader("Por favor, identifique-se para acessar a ferramenta.")
@@ -219,18 +248,33 @@ def show_main_app():
                     st.rerun()
 
         st.divider()
-        with st.expander("Sobre esta Ferramenta"):
+        with st.expander("Sobre esta Ferramienta"):
             st.info("""
             Esta plataforma foi desenvolvida para agilizar a verificação de imagens dos SKUs.
             Desenvolvido por: Jair Jales
             """)
-        st.caption(f"Versão 4.0 | {datetime.now().year}")
+        st.caption(f"Versão 4.1 | {datetime.now().year}")
 
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
     st.markdown("Utilize o campo abaixo para buscar por um ou mais SKUs. A busca pode ser padrão ou por uma imagem específica (ex: `SKU_08`).")
 
-    initial_search_value = st.session_state.pop("current_search", "")
+    # MODIFICADO: Verifica se há SKUs na URL para executar a busca automaticamente
+    skus_from_url = st.query_params.get("skus")
+    if skus_from_url:
+        # Decodifica e limpa os SKUs da URL
+        cleaned_inputs = list(dict.fromkeys([s.strip().upper() for s in skus_from_url.split(',') if s.strip()]))
+        # Formata para exibição no text_area
+        initial_search_value = "\n".join(cleaned_inputs)
+        # Remove o parâmetro da URL para evitar re-buscas em interações futuras
+        st.query_params.clear()
+        # Define um flag para indicar que a busca deve ser processada
+        run_search_on_load = True
+    else:
+        initial_search_value = st.session_state.pop("current_search", "")
+        cleaned_inputs = []
+        run_search_on_load = False
+
 
     with st.container(border=True):
         input_skus_str = st.text_area(
@@ -246,7 +290,7 @@ def show_main_app():
         with col2:
             force_refresh = st.checkbox("Forçar atualização", help="Marque esta opção se acabou de subir uma imagem e ela não está aparecendo. Ignora o cache de 1h.")
 
-    if search_button_clicked:
+    if search_button_clicked and not run_search_on_load:
         raw_inputs = [sku.strip().upper() for sku in re.split(r'[,\s\n]+', input_skus_str) if sku.strip()]
         cleaned_inputs = list(dict.fromkeys(raw_inputs))
         
@@ -258,12 +302,20 @@ def show_main_app():
                 st.session_state.search_history.append(search_term_for_history)
                 if len(st.session_state.search_history) > MAX_HISTORY_ITEMS:
                     st.session_state.search_history.pop(0)
-
+            
             process_and_display_results(cleaned_inputs, force_refresh)
+    
+    # MODIFICADO: Executa a busca se os SKUs vieram da URL
+    elif run_search_on_load:
+        process_and_display_results(cleaned_inputs, force_refresh)
 
 def process_and_display_results(cleaned_inputs, force_refresh=False):
     st.subheader("Resultados da Verificação")
     
+    # NOVO: Adiciona o botão de compartilhar a pesquisa
+    if cleaned_inputs:
+        create_shareable_link_button(cleaned_inputs)
+
     cache_buster = int(time.time()) if force_refresh else None
 
     with st.spinner("Buscando imagens em nossos servidores..."):
