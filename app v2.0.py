@@ -48,6 +48,66 @@ def _search_hosting_location(base_url: str, normalized_sku: str, is_old_hosting:
 
     def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
         """Verifica se uma URL de imagem existe."""
+        
+        # --- INÍCIO DA CORREÇÃO ---
+        # Lógica para tratar o formato de nome de arquivo especial para kits K2-K5 na hospedagem antiga
+        filename = ""
+        kit_pattern = re.match(r'^(K[2-5])-(\d+)$', normalized_sku)
+
+        if is_old_hosting and kit_pattern:
+            kit_prefix = kit_pattern.group(1) # Ex: "K2"
+            sku_number = kit_pattern.group(2) # Ex: "8755"
+            # Remonta o nome do arquivo para o formato: 8755K2_01.jpg
+            filename = f"{sku_number}{kit_prefix}_{num:02d}.jpg"
+        else:
+            # Mantém a lógica original para todos os outros casos (hospedagem nova e SKUs normais)
+            filename = f"{normalized_sku}_{num:02d}.jpg"
+        # --- FIM DA CORREÇÃO ---
+        
+        url = f"{base_url}/{normalized_sku}/{filename}"
+            
+        delay = 0.3
+        for _ in range(3):
+            try:
+                resp = session.head(url, allow_redirects=True, timeout=timeout)
+                if resp.status_code == 200:
+                    return f"{url}?v={int(time.time())}" # Cache buster
+                elif resp.status_code == 429:
+                    time.sleep(delay * 2)
+                else:
+                    return None # Se não for 200 ou 429, provavelmente não existe.
+            except requests.RequestException:
+                time.sleep(delay)
+            delay *= 2
+        return None
+
+    if specific_number is not None:
+        hit = head_ok(specific_number)
+        return [hit] if hit else []
+
+    if is_kit_6392 and is_old_hosting: # Heurística específica da hospedagem antiga
+        if head_ok(1, timeout=min(1.5, REQUEST_TIMEOUT)) is None:
+            hit_06 = head_ok(6)
+            if hit_06:
+                return [hit_06]
+
+    numbers = list(range(1, MAX_IMAGES_TO_CHECK + 1))
+    if is_kit_6392 and 6 not in numbers:
+        numbers.append(6)
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as ex:
+        results = list(ex.map(head_ok, numbers))
+
+    found = [u for u in results if u]
+
+    def num_key(u: str) -> int:
+        m = re.search(r"_(\d{2})\.jpg", u)
+        return int(m.group(1)) if m else 0
+
+    return sorted(found, key=num_key)
+
+    def head_ok(num: int, timeout: float = REQUEST_TIMEOUT) -> str | None:
+        """Verifica se uma URL de imagem existe."""
         filename = f"{normalized_sku}_{num:02d}.jpg"
         
         # A estrutura do caminho é a mesma para ambas as hospedagens agora
