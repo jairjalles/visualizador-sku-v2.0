@@ -21,9 +21,9 @@ st.set_page_config(
 OLD_IMAGE_BASE_URL = "https://topshop-tiny.com.br/wp-content/uploads/tiny"
 NEW_IMAGE_BASE_URL = "https://f005.backblazeb2.com/file/topshop"
 
-MAX_IMAGES_TO_CHECK = 5
+MAX_IMAGES_TO_CHECK = 6
 REQUEST_TIMEOUT = 3
-GRID_COLUMNS = 5
+GRID_COLUMNS = 6
 MAX_CONCURRENT_REQUESTS = 8
 MAX_HISTORY_ITEMS = 10
 
