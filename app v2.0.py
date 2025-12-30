@@ -281,6 +281,16 @@ def show_main_app():
             """)
         st.caption(f"Versão 4.1 | {datetime.now().year}")
 
+    url_params = st.query_params.get("skus")
+    if url_params and "last_url_search" not in st.session_state:
+        # Decodifica e limpa os SKUs
+        from urllib.parse import unquote
+        decoded_skus = unquote(url_params).replace(',', '\n')
+        st.session_state.current_search = decoded_skus
+        st.session_state.last_url_search = url_params # Marca como processado
+        st.rerun()
+
+    initial_search_value = st.session_state.pop("current_search", "")
     # --- TELA PRINCIPAL ---
     st.header("Visualizador de Imagens de Produto")
     st.markdown("Utilize o campo abaixo para buscar por um ou mais SKUs. A busca pode ser padrão ou por uma imagem específica (ex: `SKU_08`).")
@@ -338,14 +348,16 @@ def show_main_app():
 def process_and_display_results(cleaned_inputs, force_refresh=False):
     st.subheader("Resultados da Verificação")
     
-    # NOVO: Adiciona o botão de compartilhar a pesquisa
     if cleaned_inputs:
         create_shareable_link_button(cleaned_inputs)
 
     cache_buster = int(time.time()) if force_refresh else None
 
-    with st.spinner("Buscando imagens em nossos servidores..."):
+    with st.spinner("Buscando imagens..."):
         for user_input in cleaned_inputs:
+            # Verifica se o usuário buscou uma imagem específica (ex: SKU_06 ou SKU-06)
+            is_specific_search = bool(re.search(r'[_-]\d{1,2}$', user_input))
+            
             with st.expander(f"**Resultados para: `{user_input}`**", expanded=True):
                 images_found = []
                 match = re.compile(r'(.+?)[_-](\d{1,2})$').match(user_input)
@@ -362,9 +374,13 @@ def process_and_display_results(cleaned_inputs, force_refresh=False):
                         with cols[i % GRID_COLUMNS]:
                             st.image(img_url, use_container_width=True)
                             clean_url = img_url.split('?')[0]
-                            copy_to_clipboard_button(clean_url, button_text="Copiar Link", key=clean_url)
+                            copy_to_clipboard_button(clean_url, button_text="Copiar Link", key=f"{user_input}_{i}")
                 else:
-                    st.error(f"Nenhuma imagem encontrada para `{user_input}`.", icon="❌")
+                    # MUDANÇA AQUI: Se for busca específica (_06), mostra apenas um aviso discreto
+                    if is_specific_search:
+                        st.caption(f"ℹ️ A imagem específica `{user_input}` não está disponível nos servidores.")
+                    else:
+                        st.error(f"Nenhuma imagem encontrada para o SKU `{user_input}`.", icon="❌")
 
 # --- PONTO DE ENTRADA PRINCIPAL ---
 if st.session_state.user_name is None:
